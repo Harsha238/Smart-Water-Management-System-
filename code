@@ -1,0 +1,121 @@
+from hcsr04 import HCSR04
+from time import sleep
+
+import machine
+from machine import Pin, SoftI2C
+from lcd_api import LcdApi
+from i2c_lcd import I2cLcd
+from time import sleep
+
+import urequests
+import time
+import con
+
+H_TANK = 100.0  # Example value; replace with your tank’s measured height
+
+# === Variables for usage rate ===
+prev_water_level = None
+prev_time = None
+
+I2C_ADDR = 0x27
+totalRows = 2
+totalColumns = 16
+
+i2c = SoftI2C(scl=Pin(22), sda=Pin(21), freq=10000)     #initializing the I2C method for ESP32
+#i2c = I2C(scl=Pin(5), sda=Pin(4), freq=10000)       #initializing the I2C method for ESP8266
+
+lcd = I2cLcd(i2c, I2C_ADDR, totalRows, totalColumns)
+
+sensor = HCSR04(trigger_pin=23, echo_pin=4)
+
+buzzer = Pin(5,Pin.OUT)
+
+def mapf( x,  in_min,  in_max,  out_min,  out_max) :
+  return (x - in_min) * (out_max - out_min) / (in_max - in_min) + out_min;
+
+
+def get_prediction(data):
+    api_url = "http://10.27.79.82:8080/predict"
+
+
+    try:
+        response = urequests.post(api_url, json=data)
+        result = response.json()
+        print("Prediction:", result["predicted_time_to_empty"])
+        response.close()
+
+    except Exception as e:
+        print("Error:", e)
+
+    time.sleep(5)
+
+
+
+
+
+
+def calculate(d):
+    global prev_water_level, prev_time
+    distance = d
+
+    try:
+        if distance is None:
+            print("Failed to read distance.")
+            time.sleep(2)
+            return  
+
+        # Calculate current water level
+        water_level = H_TANK - distance
+        if water_level < 0:
+            water_level = 0
+
+        # Compute fill ratio (0 to 1)
+        fill_ratio = water_level / H_TANK
+        if fill_ratio > 1:
+            fill_ratio = 1.0
+
+        # Compute usage rate (cm/s)
+        current_time = time.time()
+        if prev_water_level is not None:
+            delta_t = current_time - prev_time
+            usage_rate = (prev_water_level - water_level) / delta_t
+        else:
+            usage_rate = 0  # first reading
+
+        prev_water_level = water_level
+        prev_time = current_time
+
+        # Prepare data payload
+        data = {
+            "distance": distance,
+            "water_level": round(water_level, 2),
+            "usage_rate": round(abs(usage_rate), 3),
+            "fill_ratio": round(fill_ratio, 3),
+            "tank_height": H_TANK
+        }
+        
+        get_prediction(data)
+        
+    except Exception as e:
+        print('error',e)
+        
+
+
+
+while True:
+    distance = round(sensor.distance_cm(),2)
+    calculate(distance)
+    per = 100-round(mapf(distance,0,20,0,100),2)
+
+    print('Distance:', distance, 'cm')
+    lcd.putstr("water: "+str(per)+'%')
+    if distance > 15 :
+        buzzer.value(1) 
+    elif distance<7:
+        buzzer.value(0)
+    else:
+        pass
+        
+    
+    sleep(2)
+    lcd.clear()
